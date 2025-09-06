@@ -1,144 +1,120 @@
-# Alignment Specification (RFC Draft v2 – Corrected & Clarified)
+# Alignment Specification (RFC Draft v2.1 – Finalized)
 
 ## 1. Scope
 
 * The system **MUST** align tokens consisting of:
 
   * Non-space character blocks, and
-  * Blocks surrounded by span delimiters (quotes, parentheses, braces, etc.), treated as NPBS.
+  * Blocks surrounded by configured span delimiters (quotes, parentheses, etc.), treated as indivisible **NPBS**.
 * “Space” **MUST** be defined as:
 
-  * Standard blank characters (`\t`, `\n`, `" "`), and
-  * Any additional *Potential Blank Space characters (PBS)* supplied via configuration.
-* All PBS characters **MUST** be treated as equivalent to spaces for splitting and alignment.
+  * Standard blanks (`\t`, `\n`, space), and
+  * Any additional **Potential Blank Space (PBS)** characters supplied via configuration.
+* All PBS **MUST** behave like spaces for splitting and alignment.
 * Processing **MUST** occur line by line within a specified text region.
 
 ---
 
 ## 2. Line Structure
 
-* Each line **MUST** be parsed as a sequence of alternating fields.
-
-* Each field **MUST** be one of:
-
-  * **PBS**: a contiguous block of PBS characters, or
-  * **NPBS**: a block of non-PBS characters.
-
-* Field order **MUST** alternate as:
+* Each line **MUST** be parsed into alternating fields:
 
   ```
   PBS → NPBS → PBS → NPBS → …
   ```
+* Each field is either:
 
-* The first PBS field **MUST** represent indentation.
-
-* If a line has no leading spaces, the first PBS field **MUST** be empty.
-
----
-
-## 3. Preservation Rules
-
-* PBS blocks **MUST** be preserved exactly as written.
-* NPBS fields **MUST** be preserved exactly.
-* Padding **MUST** consist only of additional ASCII spaces (`U+0020`) appended after PBS blocks to reach alignment width.
+  * **PBS**: a contiguous block of PBS characters; or
+  * **NPBS**: a contiguous block of non-PBS characters (including whole spans).
+* The first PBS field **MUST** be indentation; if there is no leading space, it is empty.
 
 ---
 
-## 4. Column Model
+## 3. Span Semantics (NPBS)
 
-* The alignment grid **MUST** be column-based.
-* Columns alternate as follows:
-
-  * Column 1: PBS only (indentation).
-  * Columns 2..N: NPBS followed by PBS.
-* Column 1 **MUST NOT** contain an NPBS field.
-
----
-
-## 5. Alignment Algorithm
-
-1. Collect all lines in the target region.
-2. For each column, compute the maximum display width across rows:
-
-   * Column 1 width = max width of indent PBS.
-   * Columns 2..N width = max width of NPBS + PBS.
-3. For each row, pad PBS fields with spaces until the total column width matches the maximum.
-4. Rebuild each line by concatenating its padded fields in order.
-5. Continue until all rows have been rebuilt.
+* Span delimiters are configured via **`protected_pairs`** (default: `(")", "\"\"")`).
+* **Close-first rule**: inside a span, if the current character equals the expected closer, the span **closes**.
+* **Symmetric delimiters** (e.g. `"`): are closers before potential openers; they **do not self-nest**.
+* **Nesting** of *different* delimiters is allowed (e.g. `"( (x) )"`).
+* **Escape**: inside spans, an **`escape_char`** (default `\`) makes the next codepoint literal (doesn’t close or open spans).
+* The entire span (including its delimiters and internal PBS) is a single **NPBS** field and is preserved verbatim.
 
 ---
 
-## 6. Special Cases
+## 4. Preservation & Padding
 
-* **Empty lines**: treated as a single PBS column with value `NULL`. Contributes width `0` to column 1.
-* **PBS-only lines**: preserved unchanged, but their PBS width still contributes to column 1.
-
----
-
-## 7. Ragged Rows
-
-* The maximum number of columns is determined by the widest row.
-* Rows with fewer columns **MUST** be processed safely.
-* Missing trailing fields are ignored in padding.
-* Width calculations consider only existing fields.
+* PBS blocks and NPBS tokens **MUST** be preserved exactly as written.
+* Padding **MUST** be appended **after PBS** to reach alignment; padding is ASCII space (`U+0020`) only.
+* The algorithm **MUST NOT** insert padding inside NPBS.
 
 ---
 
-## 8. Output Guarantees
+## 5. Column Model
 
-* Alignment is **idempotent**: re-running the aligner produces identical output.
-* Indentation and blank lines are preserved.
-* PBS blocks and NPBS tokens are preserved verbatim.
+* Columns alternate:
 
----
-
-## 9. Examples
-
-### Example 1
-
-PBS = `" \t"` (spaces and tabs only)
-
-**Input**
-
-```
-foo { bar } baz
-foo baz bum
-```
-
-**Output**
-
-```
-foo { bar } baz
-foo baz      bum
-```
-
-Explanation:
-Braces `{` and `}` are treated as NPBS because they are not in `pbs_chars`.
-Thus, they “stick” to neighboring tokens and do not act like spaces.
+  * **Column 1**: PBS only (indentation),
+  * **Columns 2..N**: NPBS followed by PBS.
+* Column 1 **MUST NOT** contain NPBS.
 
 ---
 
-### Example 2
+## 6. Width Computation
 
-PBS = `" \t{}"` (spaces, tabs, and braces)
+* Use display width (`vim.fn.strdisplaywidth`) for all measurements.
+* For each column, compute the maximum width across rows:
 
-**Input**
+  * Column 1: width of indent PBS.
+  * Columns 2..N: width of **NPBS + PBS** combined.
+
+---
+
+## 7. Rebuild & Idempotence
+
+* For each row, pad its PBS so each **existing** column reaches the column maximum.
+* **Do not synthesize** trailing columns that the row did not originally have.
+* Rebuild by concatenation of that row’s columns only.
+* Running the aligner repeatedly with the same configuration **MUST** produce identical output.
+
+---
+
+## 8. Special Cases
+
+* **Empty lines**: behave as a single PBS column with `NULL` width (`0`) in column 1.
+* **PBS-only lines**: preserved unchanged; their PBS contributes to column 1 width.
+
+---
+
+## 9. Ragged Rows
+
+* The total number of columns is determined by the widest row.
+* Rows with fewer columns are processed without error; missing trailing fields are ignored in padding and width.
+
+---
+
+## 10. Examples
+
+**Example 1 — braces as NPBS**
+PBS = `" \t"`
 
 ```
-foo { bar } baz
-foo baz bum
+Input:   foo { bar } baz
+         foo baz bum
+Output:  foo { bar } baz
+         foo baz      bum
 ```
 
-**Output**
+**Example 2 — braces as PBS**
+PBS = `" \t{}"`
 
 ```
-foo { bar } baz
-foo   baz   bum
+Input:   foo { bar } baz
+         foo baz bum
+Output:  foo { bar } baz
+         foo   baz   bum
 ```
 
-Explanation:
-Braces `{` and `}` are included in `pbs_chars`.
-They are treated exactly like spaces, splitting tokens into separate columns and affecting alignment.
+---
 
-
+If that looks good, you’re fully in sync with the current code. If you’d like, I can also drop a tiny “debug widths” command that prints the parsed columns and measured widths for the current selection — handy for future puzzles like the `(j)` case.
 

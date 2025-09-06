@@ -95,14 +95,16 @@ local function split_pbs_npbs_spanaware(line, is_pbs, open_to_close, escape_char
         else
           table.insert(buf, ch); i = j
         end
-      elseif open_to_close[ch] ~= nil then
-        -- nested span
-        table.insert(stack, open_to_close[ch])
-        table.insert(buf, ch); i = j
+      -- 2) close current span (MUST check before considering nested opens)
       elseif ch == stack[#stack] then
         table.insert(buf, ch)
         table.remove(stack)
         i = j
+      -- 3) nested open (but NEVER nest same symmetric delimiter like '"')
+      elseif open_to_close[ch] ~= nil then
+        -- nested span
+        table.insert(stack, open_to_close[ch])
+        table.insert(buf, ch); i = j
       else
         table.insert(buf, ch); i = j
       end
@@ -281,6 +283,7 @@ function M.align(user_cfg, cmd_opts)
     else
       local parts = {}
       local cols = row.columns
+      local last_col = #cols  -- emit only the columns that actually exist on this row
 
       -- Column 1: indent PBS only
       do
@@ -291,7 +294,9 @@ function M.align(user_cfg, cmd_opts)
         table.insert(parts, indent .. string.rep(" ", pad))
       end
 
-      for c = 2, max_cols do
+      -- Sun, 07 Sep 2025 08:44:59 +0900
+      -- for c = 2, max_cols do
+      for c = 2, last_col do
         local np, pb = "", ""
         if cols[c] then
           np = cols[c].npbs or ""
