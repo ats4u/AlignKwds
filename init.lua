@@ -8,6 +8,13 @@ local defaults = {
   -- Default: space + tab. Add more (e.g., braces) via: :AlignRFC pbs=" \t{}"
   pbs_chars = " \t",
 
+  -- Spans (NPBS blocks): contents are NPBS as a unit, even if they contain PBS.
+  -- Defaults protect quotes and parentheses (not braces).
+  protected_pairs = { {'"', '"'}, {'(', ')'} },
+
+  -- Escape char inside spans (skips next codepoint literally)
+  escape_char = "\\",
+
   -- If no explicit :range is given, expand to contiguous nonblank block around cursor.
   expand_block_when_no_range = true,
 }
@@ -26,51 +33,112 @@ end
 
 local function strw(s) return vim.fn.strdisplaywidth(s) end
 
--- Predicate: is this single codepoint a PBS?
 local function make_is_pbs(pbs_chars)
   local set = to_set(pbs_chars)
   return function(ch) return set[ch] == true end
 end
 
--- ===================== Parsing (PBS / NPBS) =====================
+local function mk_pair_maps(pairs)
+  local open_to_close, close_set = {}, {}
+  for _, p in ipairs(pairs or {}) do
+    open_to_close[p[1]] = p[2]
+    close_set[p[2]] = true
+  end
+  return open_to_close, close_set
+end
 
--- Split a line into alternating PBS / NPBS fields, guaranteed to start with PBS (possibly empty).
--- Returns { fields... } where fields[1]=PBS, fields[2]=NPBS, fields[3]=PBS, ...
-local function split_pbs_npbs(line, is_pbs)
-  local fields = {}
-  local buf = {}
-  local at_pbs
+-- Next codepoint starting at byte index idx (1-based). Returns (cp, next_idx).
+local function next_cp(line, idx)
+  local cp = line:match(UTF8_CHARPAT, idx)
+  if not cp then return nil, idx end
+  return cp, idx + #cp
+end
 
+-- ===================== Span-aware PBS/NPBS splitting =====================
+
+-- Split into alternating PBS / NPBS fields, starting with PBS (possibly empty).
+-- Spans (from protected_pairs) are treated as indivisible NPBS blocks.
+local function split_pbs_npbs_spanaware(line, is_pbs, open_to_close, escape_char)
+  local fields, buf = {}, {}
+  local n = #line
+
+  -- Decide initial state: if first char is PBS, start in PBS; else inject empty PBS.
   local first = line:match(UTF8_CHARPAT)
+  local at_pbs
   if first == nil then
-    table.insert(fields, "") -- empty line -> PBS-only empty field
+    table.insert(fields, "") -- empty line -> single empty PBS
     return fields
   end
-
   if is_pbs(first) then
     at_pbs = true
   else
-    table.insert(fields, "") -- begin with implicit empty PBS
+    table.insert(fields, "") -- implicit leading PBS
     at_pbs = false
   end
 
-  for ch in line:gmatch(UTF8_CHARPAT) do
-    local blank = is_pbs(ch)
-    if at_pbs == blank then
-      table.insert(buf, ch)
+  local i = 1
+  local stack = {} -- stack of expected closers
+
+  while i <= n do
+    local ch, j = next_cp(line, i)
+    if not ch then break end
+
+    if #stack > 0 then
+      -- Inside a span: everything belongs to NPBS until the matching closer.
+      if at_pbs then
+        table.insert(fields, table.concat(buf)); buf = {}; at_pbs = false
+      end
+      if ch == escape_char then
+        local ch2, k = next_cp(line, j)
+        if ch2 then
+          table.insert(buf, ch .. ch2); i = k
+        else
+          table.insert(buf, ch); i = j
+        end
+      elseif open_to_close[ch] ~= nil then
+        -- nested span
+        table.insert(stack, open_to_close[ch])
+        table.insert(buf, ch); i = j
+      elseif ch == stack[#stack] then
+        table.insert(buf, ch)
+        table.remove(stack)
+        i = j
+      else
+        table.insert(buf, ch); i = j
+      end
+
     else
-      table.insert(fields, table.concat(buf))
-      buf = { ch }
-      at_pbs = blank
+      -- Outside span
+      local closer = open_to_close[ch]
+      if closer ~= nil then
+        -- Start a new span (NPBS). Spans take precedence over PBS.
+        if at_pbs then
+          table.insert(fields, table.concat(buf)); buf = {}; at_pbs = false
+        end
+        table.insert(stack, closer)
+        table.insert(buf, ch)
+        i = j
+      else
+        local blank = is_pbs(ch)
+        if at_pbs == blank then
+          table.insert(buf, ch); i = j
+        else
+          table.insert(fields, table.concat(buf))
+          buf = { ch }
+          at_pbs = blank
+          i = j
+        end
+      end
     end
   end
+
   table.insert(fields, table.concat(buf))
   return fields
 end
 
--- Convert alternating fields into "columns":
--- col 1: { indent = <PBS> }
--- col k>=2: { npbs = <NPBS>, pbs = <PBS> } (either may be "")
+-- Convert alternating fields to column cells:
+--   col 1: { indent = PBS }
+--   col k>=2: { npbs = <NPBS>, pbs = <PBS> }  (either may be "")
 local function fields_to_columns(fields)
   local cols = {}
   cols[1] = { indent = fields[1] or "" }
@@ -85,7 +153,6 @@ local function fields_to_columns(fields)
   return cols
 end
 
--- Is a line PBS-only? (All characters are PBS, or line is empty)
 local function is_pbs_only_line(line, is_pbs)
   if line == "" then return true end
   for ch in line:gmatch(UTF8_CHARPAT) do
@@ -144,6 +211,8 @@ function M.align(user_cfg, cmd_opts)
   local bufnr = 0
 
   local is_pbs = make_is_pbs(cfg.pbs_chars)
+  local open_to_close = mk_pair_maps(cfg.protected_pairs)
+  local esc = cfg.escape_char or "\\"
 
   local srow, erow = get_target_range(cmd_opts, cfg)
   if not srow or not erow or srow > erow then return end
@@ -163,7 +232,7 @@ function M.align(user_cfg, cmd_opts)
     elseif is_pbs_only_line(line, is_pbs) then
       rows[i] = { untouched = true, columns = { [1] = { indent = line } } }
     else
-      local fields = split_pbs_npbs(line, is_pbs)
+      local fields = split_pbs_npbs_spanaware(line, is_pbs, open_to_close, esc)
       local cols = fields_to_columns(fields)
       rows[i] = { untouched = false, columns = cols }
       local count = #cols
@@ -192,7 +261,7 @@ function M.align(user_cfg, cmd_opts)
         else
           local cell = cols[c]
           if cell then
-            cellw = strw((cell.npbs or "")) + strw((cell.pbs or ""))
+            cellw = strw(cell.npbs or "") + strw(cell.pbs or "")
           else
             cellw = 0
           end
@@ -203,17 +272,17 @@ function M.align(user_cfg, cmd_opts)
     col_widths[c] = mw
   end
 
-  -- Rebuild lines: emit every column up to max_cols (synthesizing empty cells as needed)
+  -- Rebuild lines up to max_cols (synthesizing empty trailing cells)
   local out = {}
   for i, line in ipairs(lines) do
     local row = rows[i]
     if row.untouched then
-      out[i] = line -- print verbatim
+      out[i] = line -- verbatim
     else
       local parts = {}
       local cols = row.columns
 
-      -- Column 1: indent PBS only; pad after it to reach col_widths[1]
+      -- Column 1: indent PBS only
       do
         local indent = (cols[1] and cols[1].indent) or ""
         local w = strw(indent)
@@ -222,18 +291,15 @@ function M.align(user_cfg, cmd_opts)
         table.insert(parts, indent .. string.rep(" ", pad))
       end
 
-      -- Columns 2..max_cols: NPBS + PBS + pad
       for c = 2, max_cols do
         local np, pb = "", ""
         if cols[c] then
           np = cols[c].npbs or ""
           pb = cols[c].pbs or ""
         end
-
         local w = strw(np) + strw(pb)
         local pad = col_widths[c] - w
         if pad < 0 then pad = 0 end
-
         table.insert(parts, np .. pb .. string.rep(" ", pad))
       end
 
@@ -250,18 +316,27 @@ function M.setup(user_cfg)
   local base_cfg = vim.tbl_deep_extend("force", {}, defaults, user_cfg or {})
   vim.api.nvim_create_user_command("AlignRFC", function(opts)
     local o = vim.tbl_deep_extend("force", {}, base_cfg)
-    -- CLI: pbs=..., block=true|false
+    -- CLI: pbs=..., pairs="() \"\"" esc=\\, block=true|false
     for _, kv in ipairs(opts.fargs) do
       local k, v = kv:match("^([%w_]+)=(.+)$")
       if k then
         if v == "true" then v = true elseif v == "false" then v = false end
-        if     k == "pbs"   then o.pbs_chars = tostring(v)
-        elseif k == "block" then o.expand_block_when_no_range = v and true or false
+        if k == "pbs" then
+          o.pbs_chars = tostring(v)
+        elseif k == "pairs" then
+          -- pairs example: pairs="() \"\" []"
+          local P = {}
+          for op, cl in v:gmatch("(%S)%s*(%S)") do table.insert(P, {op, cl}) end
+          o.protected_pairs = P
+        elseif k == "esc" then
+          o.escape_char = tostring(v)
+        elseif k == "block" then
+          o.expand_block_when_no_range = v and true or false
         end
       end
     end
     M.align(o, opts)
-  end, { nargs = "*", range = true, desc = "Align per PBS/NPBS (PBS affects width)" })
+  end, { nargs = "*", range = true, desc = "Align per PBS/NPBS (v2, span-aware NPBS)" })
 end
 
 return M
