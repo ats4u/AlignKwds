@@ -1,22 +1,22 @@
 -- lua/align_rfc/init.lua
 local M = {}
 
--- ===== Config & helpers =====
+-- ===================== Config & helpers =====================
 
 local defaults = {
-  -- Characters considered PBS (Potential Blank Spaces). Newlines aren't in a single line.
-  -- Default: space + tab. Add others (e.g., U+3000) via :AlignRFC pbs=" \t\u{3000}"
+  -- Characters considered PBS (Potential Blank Spaces).
+  -- Example to include braces as PBS: pbs_chars = " \t{}"
   pbs_chars = " \t",
 
-  -- Advisory only (content is always preserved); kept for parity with your spec.
-  ignore_chars = "{}", -- e.g. "{}" to conceptually ignore braces (no-op in RFC v1)
+  -- Subset of PBS that are "ignored PBS" (preserved exactly, zero-width for alignment).
+  -- MUST be a subset of pbs_chars for intended behavior.
+  ignored_pbs_chars = "",
 
-  -- If true and no explicit :range, expand to contiguous nonblank block around cursor.
-  -- If false, operate on current line only (unless a range is given).
+  -- If no explicit :range is given, expand to contiguous nonblank block around cursor.
   expand_block_when_no_range = true,
 }
 
--- UTF-8 single-codepoint pattern (works in LuaJIT / Lua 5.1)
+-- UTF-8 single-codepoint pattern (LuaJIT / Lua 5.1 safe)
 local UTF8_CHARPAT = "[%z\1-\127\194-\244][\128-\191]*"
 
 local function to_set(s)
@@ -30,11 +30,17 @@ end
 
 local function strw(s) return vim.fn.strdisplaywidth(s) end
 
--- Predicate factory: is this single UTF-8 character a PBS?
+-- Predicates for PBS / ignored-PBS (single codepoint)
 local function make_is_pbs(pbs_chars)
   local set = to_set(pbs_chars)
   return function(ch) return set[ch] == true end
 end
+local function make_is_ignored(ignored_chars)
+  local set = to_set(ignored_chars)
+  return function(ch) return set[ch] == true end
+end
+
+-- ===================== Parsing (PBS / NPBS) =====================
 
 -- Split a line into alternating PBS / NPBS fields, guaranteed to start with PBS (possibly empty).
 -- Returns { fields... } where fields[1]=PBS, fields[2]=NPBS, fields[3]=PBS, ...
@@ -43,18 +49,16 @@ local function split_pbs_npbs(line, is_pbs)
   local buf = {}
   local at_pbs
 
-  -- Peek first char to decide if we need an initial empty PBS.
   local first = line:match(UTF8_CHARPAT)
   if first == nil then
-    -- Empty line -> PBS-only empty field (column 1 indent)
-    table.insert(fields, "")
+    table.insert(fields, "") -- empty line -> PBS-only empty field
     return fields
   end
+
   if is_pbs(first) then
     at_pbs = true
   else
-    -- Start with implicit empty PBS
-    table.insert(fields, "")
+    table.insert(fields, "") -- begin with implicit empty PBS
     at_pbs = false
   end
 
@@ -63,28 +67,22 @@ local function split_pbs_npbs(line, is_pbs)
     if at_pbs == blank then
       table.insert(buf, ch)
     else
-      -- boundary: flush previous field, switch mode
       table.insert(fields, table.concat(buf))
       buf = { ch }
       at_pbs = blank
     end
   end
-  -- flush last field
   table.insert(fields, table.concat(buf))
-
   return fields
 end
 
 -- Convert alternating fields into "columns":
--- col 1: { indent = PBS }
+-- col 1: { indent = <PBS> }
 -- col k>=2: { npbs = <NPBS>, pbs = <PBS> } (either may be "")
 local function fields_to_columns(fields)
   local cols = {}
-  local indent = fields[1] or ""
-  cols[1] = { indent = indent }
-
-  local idx = 2
-  local colno = 2
+  cols[1] = { indent = fields[1] or "" }
+  local idx, colno = 2, 2
   while idx <= #fields do
     local np = fields[idx] or ""
     local pb = fields[idx + 1] or ""
@@ -95,7 +93,7 @@ local function fields_to_columns(fields)
   return cols
 end
 
--- Is a line PBS-only? (All characters are PBS, or empty)
+-- Is a line PBS-only? (All characters are PBS, or line is empty)
 local function is_pbs_only_line(line, is_pbs)
   if line == "" then return true end
   for ch in line:gmatch(UTF8_CHARPAT) do
@@ -104,13 +102,30 @@ local function is_pbs_only_line(line, is_pbs)
   return true
 end
 
--- ===== Range collection =====
+-- Visible width of a PBS block, excluding ignored PBS characters
+local function visible_pbs_width(pbs, is_ignored_pbs)
+  if pbs == "" then return 0 end
+  local w = 0
+  for ch in pbs:gmatch(UTF8_CHARPAT) do
+    if not is_ignored_pbs(ch) then
+      w = w + strw(ch)
+    end
+  end
+  return w
+end
+
+-- Compute cell visible width for c>=2 as NPBS + PBS(excluding ignored)
+local function visible_cell_width(npbs, pbs, is_ignored_pbs)
+  return strw(npbs or "") + visible_pbs_width(pbs or "", is_ignored_pbs)
+end
+
+-- ===================== Range collection =====================
 
 local function get_target_range(opts, cfg)
   local bufnr = 0
   local line_count = vim.api.nvim_buf_line_count(bufnr)
 
-  -- 1) explicit :range (preferred)
+  -- 1) explicit :range
   if opts and opts.line1 and opts.line2 and opts.line1 ~= 0 and opts.line2 ~= 0 then
     return opts.line1, opts.line2
   end
@@ -124,7 +139,7 @@ local function get_target_range(opts, cfg)
     return srow, erow
   end
 
-  -- 3) contiguous nonblank block around cursor (if enabled)
+  -- 3) contiguous nonblank block around cursor
   if cfg.expand_block_when_no_range then
     local cur = vim.api.nvim_win_get_cursor(0)[1]
     local srow = cur
@@ -147,12 +162,14 @@ local function get_target_range(opts, cfg)
   return cur, cur
 end
 
--- ===== Core align =====
+-- ===================== Core align =====================
 
 function M.align(user_cfg, cmd_opts)
   local cfg = vim.tbl_deep_extend("force", {}, defaults, user_cfg or {})
   local bufnr = 0
+
   local is_pbs = make_is_pbs(cfg.pbs_chars)
+  local is_ignored_pbs = make_is_ignored(cfg.ignored_pbs_chars)
 
   local srow, erow = get_target_range(cmd_opts, cfg)
   if not srow or not erow or srow > erow then return end
@@ -160,16 +177,12 @@ function M.align(user_cfg, cmd_opts)
   local lines = vim.api.nvim_buf_get_lines(bufnr, srow - 1, erow, false)
   if #lines == 0 then return end
 
-  -- Row storage
-  -- rows[i] = { untouched=bool, columns=table|nil }
+  -- rows[i] = { untouched=bool, columns=table }
   local rows = {}
-  local max_cols = 1 -- at least indentation column exists
+  local max_cols = 1
   local any_for_widths = false
 
   -- Collect rows & determine max_cols
-  -- IMPORTANT per your tweak:
-  --  - Empty lines contribute column-1 width as 0 (columns={ [1]={indent=""} })
-  --  - PBS-only lines contribute their PBS width to column 1 (columns={ [1]={indent=line} })
   for i, line in ipairs(lines) do
     if line == "" then
       rows[i] = { untouched = true, columns = { [1] = { indent = "" } } }
@@ -186,13 +199,12 @@ function M.align(user_cfg, cmd_opts)
   end
 
   if not any_for_widths then
-    -- Region contains only empty/PBS-only lines; nothing to align.
-    return
+    return -- only empty/PBS-only lines
   end
 
   -- Compute max cell width per column:
-  --   c=1: max display width of indent PBS
-  --   c>=2: max display width of (NPBS + PBS)
+  --   c=1: max visible width of indent PBS (excluding ignored PBS)
+  --   c>=2: max visible width of NPBS + PBS(excluding ignored PBS)
   local col_widths = {}
   for c = 1, max_cols do
     local mw = 0
@@ -202,11 +214,11 @@ function M.align(user_cfg, cmd_opts)
         local cellw
         if c == 1 then
           local indent = (cols[1] and cols[1].indent) or ""
-          cellw = strw(indent)
+          cellw = visible_pbs_width(indent, is_ignored_pbs)
         else
           local cell = cols[c]
           if cell then
-            cellw = strw(cell.npbs or "") + strw(cell.pbs or "")
+            cellw = visible_cell_width(cell.npbs, cell.pbs, is_ignored_pbs)
           else
             cellw = 0
           end
@@ -217,36 +229,39 @@ function M.align(user_cfg, cmd_opts)
     col_widths[c] = mw
   end
 
-  -- Rebuild lines
+  -- Rebuild lines.
+  -- We never modify the original PBS content (including ignored PBS).
+  -- We only append standard spaces AFTER each column's cell to reach col_widths[c].
   local out = {}
   for i, line in ipairs(lines) do
     local row = rows[i]
     if row.untouched then
-      -- Empty / PBS-only lines print exactly as-is
-      out[i] = line
+      out[i] = line -- print verbatim
     else
       local parts = {}
       local cols = row.columns
 
-      -- Column 1: indent PBS only, pad to col_widths[1]
+      -- Column 1: indent PBS only; pad after it to reach col_widths[1] (visible width basis)
       do
         local indent = (cols[1] and cols[1].indent) or ""
-        local w = strw(indent)
+        local w = visible_pbs_width(indent, is_ignored_pbs)
         local pad = col_widths[1] - w
         if pad < 0 then pad = 0 end
         table.insert(parts, indent .. string.rep(" ", pad))
       end
 
-      -- Columns 2..max_cols: emit NPBS + PBS + spaces to reach col width
+      -- Columns 2..max_cols: NPBS + PBS + pad (pad based on visible width)
       for c = 2, max_cols do
         local np, pb = "", ""
         if cols[c] then
           np = cols[c].npbs or ""
           pb = cols[c].pbs or ""
         end
-        local cellw = strw(np) + strw(pb)
-        local pad = col_widths[c] - cellw
+
+        local w = visible_cell_width(np, pb, is_ignored_pbs)
+        local pad = col_widths[c] - w
         if pad < 0 then pad = 0 end
+
         table.insert(parts, np .. pb .. string.rep(" ", pad))
       end
 
@@ -257,28 +272,28 @@ function M.align(user_cfg, cmd_opts)
   vim.api.nvim_buf_set_lines(bufnr, srow - 1, erow, false, out)
 end
 
--- ===== Command setup =====
+-- ===================== Command setup =====================
 
 function M.setup(user_cfg)
   local base_cfg = vim.tbl_deep_extend("force", {}, defaults, user_cfg or {})
   vim.api.nvim_create_user_command("AlignRFC", function(opts)
     local o = vim.tbl_deep_extend("force", {}, base_cfg)
-    -- Parse k=v args: pbs=..., ignore=..., block=false|true
+    -- CLI: pbs=..., ignoredpbs=..., block=true|false
     for _, kv in ipairs(opts.fargs) do
       local k, v = kv:match("^([%w_]+)=(.+)$")
       if k then
         if v == "true" then v = true elseif v == "false" then v = false end
         if k == "pbs" then
           o.pbs_chars = tostring(v)
-        elseif k == "ignore" then
-          o.ignore_chars = tostring(v)
+        elseif k == "ignoredpbs" then
+          o.ignored_pbs_chars = tostring(v)
         elseif k == "block" then
           o.expand_block_when_no_range = v and true or false
         end
       end
     end
     M.align(o, opts)
-  end, { nargs = "*", range = true, desc = "Align columns per PBS/NPBS RFC" })
+  end, { nargs = "*", range = true, desc = "Align per PBS/NPBS RFC v2 (ignored PBS supported)" })
 end
 
 return M
