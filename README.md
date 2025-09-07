@@ -3,6 +3,10 @@
 `AlignKwds` is a Neovim plugin written in Lua that neatly aligns tokens into columns based on **spaces (PBS)** and **non-spaces (NPBS)**.
 It is *span-aware* (handles quotes, parentheses, braces, etc.), supports **custom blank characters**, and even lets you treat **keywords like `\sp` or `\sw` as spaces**.
 
+![demo1](./imgs/pat1/output.gif)
+
+![demo2](./imgs/pat2/output.gif)
+
 ---
 
 ## 📦 Installation
