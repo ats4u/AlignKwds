@@ -218,14 +218,4 @@ PBS = `" \t"`, PBS keywords = `{"\sp","\sw"}`
 * **Verbatim**: all tokens are preserved exactly.
 * **Unicode-safe**: uses display width (so wide chars align correctly).
 
----
-
-## 🛠️ Tips
-
-* Use `pbskw` for macros like `\sp`, `\sw`, `\tab`.
-* Add exotic blanks (e.g. full-width space `\u{3000}`) to `pbs`.
-* Define more pairs if you align JSON, Lisp, or LaTeX code.
-* Debugging helper: we can add `:AlignKwdsDebug` to show how a line splits into PBS/NPBS.
-
----
 
