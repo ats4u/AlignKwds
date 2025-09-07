@@ -1,13 +1,42 @@
 # AlignKwds – Keyword-Aware Alignment for Neovim
 
-`AlignKwds` is a Neovim plugin written in Lua that neatly aligns tokens into columns based on **spaces (PBS)** and **non-spaces (NPBS)**.
-It is *span-aware* (handles quotes, parentheses, braces, etc.), supports **custom blank characters**, and even lets you treat **keywords like `\sp` or `\sw` as spaces**.
+> A Neovim plugin to align keyword-based tables (PBS/NPBS) with span-aware precision.
 
 ![demo1](./imgs/pat1/output.gif)
 
 ![demo2](./imgs/pat2/output.gif)
 
+`AlignKwds` is a Neovim plugin written in Lua that neatly aligns tokens into columns based on **spaces (PBS Potential Blank Space Characters)** and **non-spaces (NPBS Non-Potential Blank Space Characters)**.
+
+It is *span-aware* (handles quotes, parentheses, braces, etc.), supports **custom blank characters**, and even lets you treat **keywords like `\sp` or `\sw` as spaces** as well as specified characters.
 ---
+
+## Special Thanks to ChatGPT-5
+
+<!--
+## Special thanks goes to ChatGPT5
+
+In most of my life, I have been extensively learning Pascal, Java, JavaScript,
+and other languages but Lua. And I have zero knowledge about Lua before. But
+thanks to the coming of ChatGPT, I could write lua program which runs on
+NeoVim.
+
+In most of my life, I have been speaking only Japanese. But the coming of
+ChatGPT made me available to write User Manual in English.
+
+This manual was mostly written by ChatGPT, except this section.
+
+Thank you, ChatGPT, and thank you God.
+-->
+
+For most of my life I studied and worked with Pascal, Java, JavaScript, and many other languages — but never Lua. Before this project I had zero knowledge of Lua. Thanks to the arrival of ChatGPT, I was able to write a Lua program that runs inside Neovim.
+
+Similarly, for most of my life I spoke only Japanese. Yet with ChatGPT’s help, I was able to write this User Manual in English.
+
+This manual was written mostly with ChatGPT’s assistance, except for this section.
+
+Thank you, ChatGPT — and thank You, God.
+
 
 ## 📦 Installation
 
@@ -200,31 +229,4 @@ PBS = `" \t"`, PBS keywords = `{"\sp","\sw"}`
 * Debugging helper: we can add `:AlignKwdsDebug` to show how a line splits into PBS/NPBS.
 
 ---
-
-## Special Thanks to ChatGPT-5
-
-<!--
-## Special thanks goes to ChatGPT5
-
-In most of my life, I have been extensively learning Pascal, Java, JavaScript,
-and other languages but Lua. And I have zero knowledge about Lua before. But
-thanks to the coming of ChatGPT, I could write lua program which runs on
-NeoVim.
-
-In most of my life, I have been speaking only Japanese. But the coming of
-ChatGPT made me available to write User Manual in English.
-
-This manual was mostly written by ChatGPT, except this section.
-
-Thank you, ChatGPT, and thank you God.
--->
-
-For most of my life I studied and worked with Pascal, Java, JavaScript, and many other languages — but never Lua. Before this project I had zero knowledge of Lua. Thanks to the arrival of ChatGPT, I was able to write a Lua program that runs inside Neovim.
-
-Similarly, for most of my life I spoke only Japanese. Yet with ChatGPT’s help, I was able to write this User Manual in English.
-
-This manual was written mostly with ChatGPT’s assistance, except for this section.
-
-Thank you, ChatGPT — and thank You, God.
-
 
