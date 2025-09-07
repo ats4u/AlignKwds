@@ -1,4 +1,4 @@
--- lua/align_rfc/init.lua
+-- lua/align_kwds/init.lua
 local M = {}
 
 -- ===================== Config & helpers =====================
