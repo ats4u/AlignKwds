@@ -1,15 +1,13 @@
 # AlignKwds – Keyword-Aware Alignment for Neovim
 
-> A Neovim plugin to align keyword-based tables (PBS/NPBS) with span-aware precision.
+A Neovim plugin to align keyword-based tables (PBS/NPBS) with span-aware precision.
 
 ![demo1](./imgs/pat1/output.gif)
-
 ![demo2](./imgs/pat2/output.gif)
 
 `AlignKwds` is a Neovim plugin written in Lua that neatly aligns tokens into columns based on **spaces (PBS Potential Blank Space Characters)** and **non-spaces (NPBS Non-Potential Blank Space Characters)**.
 
 It is *span-aware* (handles quotes, parentheses, braces, etc.), supports **custom blank characters**, and even lets you treat **keywords like `\sp` or `\sw` as spaces** as well as specified characters.
----
 
 ## Special Thanks to ChatGPT-5
 
