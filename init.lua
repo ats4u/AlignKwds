@@ -10,7 +10,15 @@ local defaults = {
 
   -- Spans (NPBS blocks): contents are NPBS as a unit, even if they contain PBS.
   -- Defaults protect quotes and parentheses (not braces).
-  protected_pairs = { {'"', '"'}, {'(', ')'} },
+  -- protected_pairs = { {'"', '"'}, {'(', ')'} },
+
+  protected_pairs = {
+    { "'", "'" },
+    { '"', '"' },
+    { '(', ')' },
+    { '{', '}' },
+    { '[', ']' },
+  },
 
   -- Escape char inside spans (skips next codepoint literally)
   escape_char = "\\",
