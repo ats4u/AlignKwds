@@ -5,20 +5,12 @@ local M = {}
 
 local defaults = {
   -- Characters considered PBS (Potential Blank Spaces).
-  -- Default: space + tab. Add more (e.g., braces) via: :AlignRFC pbs=" \t{}"
+  -- Default: space + tab. Add more via :AlignRFC pbs=" \t{}"
   pbs_chars = " \t",
 
   -- Spans (NPBS blocks): contents are NPBS as a unit, even if they contain PBS.
   -- Defaults protect quotes and parentheses (not braces).
-  -- protected_pairs = { {'"', '"'}, {'(', ')'} },
-
-  protected_pairs = {
-    { "'", "'" },
-    { '"', '"' },
-    { '(', ')' },
-    { '{', '}' },
-    { '[', ']' },
-  },
+  protected_pairs = { {'"', '"'}, {'(', ')'} },
 
   -- Escape char inside spans (skips next codepoint literally)
   escape_char = "\\",
@@ -55,6 +47,120 @@ local function mk_pair_maps(pairs)
   return open_to_close, close_set
 end
 
+-- Encode Unicode codepoint to UTF-8 (Lua 5.1)
+local function cp_to_utf8(n)
+  if n < 0x80 then
+    return string.char(n)
+  elseif n < 0x800 then
+    return string.char(0xC0 + math.floor(n/0x40),
+                       0x80 + (n % 0x40))
+  elseif n < 0x10000 then
+    return string.char(0xE0 + math.floor(n/0x1000),
+                       0x80 + (math.floor(n/0x40) % 0x40),
+                       0x80 + (n % 0x40))
+  else
+    return string.char(0xF0 + math.floor(n/0x40000),
+                       0x80 + (math.floor(n/0x1000) % 0x40),
+                       0x80 + (math.floor(n/0x40) % 0x40),
+                       0x80 + (n % 0x40))
+  end
+end
+
+-- Unquote "..." or '...' and handle escapes like \t, \n, \u{XXXX}
+local function unquote_and_unescape(s)
+  if not s then return "" end
+  -- strip one layer of matching quotes if present
+  if (#s >= 2) and
+     ((s:sub(1,1) == '"' and s:sub(-1) == '"') or
+      (s:sub(1,1) == "'" and s:sub(-1) == "'")) then
+    s = s:sub(2, -2)
+  end
+  -- \u{XXXX} → UTF-8
+  s = s:gsub("\\u{%x+}", function(m)
+    local hex = m:match("%x+")
+    local cp = tonumber(hex, 16)
+    if not cp then return "" end
+    return cp_to_utf8(cp)
+  end)
+  -- \xNN → byte
+  s = s:gsub("\\x(%x%x)", function(h)
+    return string.char(tonumber(h,16))
+  end)
+  -- simple escapes
+  s = s
+    :gsub("\\t", "\t")
+    :gsub("\\n", "\n")
+    :gsub("\\r", "\r")
+    :gsub("\\\\", "\\")
+    :gsub('\\"', '"')
+    :gsub("\\'", "'")
+  return s
+end
+
+-- Parse opts.args into { [k]=v, ... } with quoted values and spaces supported
+local function parse_kv_args(raw)
+  local args = {}
+  if not raw or raw == "" then return args end
+  local i, n = 1, #raw
+
+  local function skip_ws()
+    while i <= n and raw:sub(i,i):match("%s") do i = i + 1 end
+  end
+
+  local function read_key()
+    local s = i
+    while i <= n and raw:sub(i,i):match("[%w_]") do i = i + 1 end
+    if i > n or raw:sub(i,i) ~= "=" then return nil end
+    local key = raw:sub(s, i-1)
+    i = i + 1 -- skip '='
+    return key
+  end
+
+  local function read_val()
+    if i > n then return "" end
+    local ch = raw:sub(i,i)
+    if ch == '"' or ch == "'" then
+      local quote = ch
+      i = i + 1
+      local buf = {}
+      while i <= n do
+        local c = raw:sub(i,i)
+        if c == "\\" then
+          if i < n then
+            table.insert(buf, raw:sub(i, i+1))
+            i = i + 2
+          else
+            table.insert(buf, "\\")
+            i = i + 1
+          end
+        elseif c == quote then
+          i = i + 1
+          break
+        else
+          table.insert(buf, c)
+          i = i + 1
+        end
+      end
+      return unquote_and_unescape(quote .. table.concat(buf) .. quote)
+    else
+      local s = i
+      while i <= n and not raw:sub(i,i):match("%s") do i = i + 1 end
+      return unquote_and_unescape(raw:sub(s, i-1))
+    end
+  end
+
+  while i <= n do
+    skip_ws()
+    if i > n then break end
+    local key = read_key()
+    if not key then break end
+    local val = read_val()
+    args[key] = val
+    skip_ws()
+  end
+  return args
+end
+
 -- Next codepoint starting at byte index idx (1-based). Returns (cp, next_idx).
 local function next_cp(line, idx)
   local cp = line:match(UTF8_CHARPAT, idx)
@@ -70,7 +176,7 @@ local function split_pbs_npbs_spanaware(line, is_pbs, open_to_close, escape_char
   local fields, buf = {}, {}
   local n = #line
 
-  -- Decide initial state: if first char is PBS, start in PBS; else inject empty PBS.
+  -- initial state
   local first = line:match(UTF8_CHARPAT)
   local at_pbs
   if first == nil then
@@ -92,10 +198,11 @@ local function split_pbs_npbs_spanaware(line, is_pbs, open_to_close, escape_char
     if not ch then break end
 
     if #stack > 0 then
-      -- Inside a span: everything belongs to NPBS until the matching closer.
+      -- Inside a span: everything is NPBS until we close the current span.
       if at_pbs then
         table.insert(fields, table.concat(buf)); buf = {}; at_pbs = false
       end
+      -- 1) escape?
       if ch == escape_char then
         local ch2, k = next_cp(line, j)
         if ch2 then
@@ -103,22 +210,22 @@ local function split_pbs_npbs_spanaware(line, is_pbs, open_to_close, escape_char
         else
           table.insert(buf, ch); i = j
         end
-      -- 2) close current span (MUST check before considering nested opens)
+      -- 2) close current span FIRST (important for symmetric delimiters like ")
       elseif ch == stack[#stack] then
         table.insert(buf, ch)
         table.remove(stack)
         i = j
-      -- 3) nested open (but NEVER nest same symmetric delimiter like '"')
-      elseif open_to_close[ch] ~= nil then
-        -- nested span
+      -- 3) nested open (but NEVER nest same symmetric delimiter)
+      elseif open_to_close[ch] and open_to_close[ch] ~= ch then
         table.insert(stack, open_to_close[ch])
-        table.insert(buf, ch); i = j
+        table.insert(buf, ch)
+        i = j
       else
         table.insert(buf, ch); i = j
       end
 
     else
-      -- Outside span
+      -- Outside any span
       local closer = open_to_close[ch]
       if closer ~= nil then
         -- Start a new span (NPBS). Spans take precedence over PBS.
@@ -282,7 +389,7 @@ function M.align(user_cfg, cmd_opts)
     col_widths[c] = mw
   end
 
-  -- Rebuild lines up to max_cols (synthesizing empty trailing cells)
+  -- Rebuild lines using only the columns that actually exist on that row (idempotent)
   local out = {}
   for i, line in ipairs(lines) do
     local row = rows[i]
@@ -291,7 +398,7 @@ function M.align(user_cfg, cmd_opts)
     else
       local parts = {}
       local cols = row.columns
-      local last_col = #cols  -- emit only the columns that actually exist on this row
+      local last_col = #cols
 
       -- Column 1: indent PBS only
       do
@@ -302,8 +409,6 @@ function M.align(user_cfg, cmd_opts)
         table.insert(parts, indent .. string.rep(" ", pad))
       end
 
-      -- Sun, 07 Sep 2025 08:44:59 +0900
-      -- for c = 2, max_cols do
       for c = 2, last_col do
         local np, pb = "", ""
         if cols[c] then
@@ -329,27 +434,39 @@ function M.setup(user_cfg)
   local base_cfg = vim.tbl_deep_extend("force", {}, defaults, user_cfg or {})
   vim.api.nvim_create_user_command("AlignRFC", function(opts)
     local o = vim.tbl_deep_extend("force", {}, base_cfg)
-    -- CLI: pbs=..., pairs="() \"\"" esc=\\, block=true|false
-    for _, kv in ipairs(opts.fargs) do
-      local k, v = kv:match("^([%w_]+)=(.+)$")
-      if k then
-        if v == "true" then v = true elseif v == "false" then v = false end
-        if k == "pbs" then
-          o.pbs_chars = tostring(v)
-        elseif k == "pairs" then
-          -- pairs example: pairs="() \"\" []"
-          local P = {}
-          for op, cl in v:gmatch("(%S)%s*(%S)") do table.insert(P, {op, cl}) end
-          o.protected_pairs = P
-        elseif k == "esc" then
-          o.escape_char = tostring(v)
-        elseif k == "block" then
-          o.expand_block_when_no_range = v and true or false
-        end
-      end
+
+    -- Robust arg parsing from raw string (supports quoted values & escapes)
+    local kv = parse_kv_args(opts.args)
+
+    if kv.pbs ~= nil then
+      o.pbs_chars = kv.pbs
     end
+    if kv.pairs ~= nil then
+      -- pairs example: pairs="() \"\" []"
+      local P = {}
+      local s = kv.pairs
+      -- simple two-char tokens scanning
+      local i, n = 1, #s
+      while i <= n do
+        while i <= n and s:sub(i,i):match("%s") do i = i + 1 end
+        if i > n then break end
+        local op = s:sub(i,i); i = i + 1
+        while i <= n and s:sub(i,i):match("%s") do i = i + 1 end
+        if i > n then break end
+        local cl = s:sub(i,i); i = i + 1
+        table.insert(P, {op, cl})
+      end
+      if #P > 0 then o.protected_pairs = P end
+    end
+    if kv.esc ~= nil then
+      o.escape_char = kv.esc
+    end
+    if kv.block ~= nil then
+      o.expand_block_when_no_range = (kv.block == "true" or kv.block == true)
+    end
+
     M.align(o, opts)
-  end, { nargs = "*", range = true, desc = "Align per PBS/NPBS (v2, span-aware NPBS)" })
+  end, { nargs = "*", range = true, desc = "Align per PBS/NPBS (v2.1, robust CLI)" })
 end
 
 return M
