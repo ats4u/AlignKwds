@@ -3,6 +3,32 @@
 `AlignKwds` is a Neovim command that neatly aligns tokens into columns based on **spaces (PBS)** and **non-spaces (NPBS)**.
 It is *span-aware* (handles quotes, parentheses, etc.), supports **custom blank characters**, and even lets you treat **keywords like `\sp` or `\sw` as spaces**.
 
+<!--
+## Special thanks goes to ChatGPT5
+
+In most of my life, I have been extensively learning Pascal, Java, JavaScript,
+and other languages but Lua. And I have zero knowledge about Lua before. But
+thanks to the coming of ChatGPT, I could write lua program which runs on
+NeoVim.
+
+In most of my life, I have been speaking only Japanese. But the coming of
+ChatGPT made me available to write User Manual in English.
+
+This manual was mostly written by ChatGPT, except this section.
+
+Thank you, ChatGPT, and thank you God.
+-->
+
+## Special Thanks to ChatGPT-5
+
+For most of my life I studied and worked with Pascal, Java, JavaScript, and many other languages — but never Lua. Before this project I had zero knowledge of Lua. Thanks to the arrival of ChatGPT, I was able to write a Lua program that runs inside Neovim.
+
+Similarly, for most of my life I spoke only Japanese. Yet with ChatGPT’s help, I was able to write this User Manual in English.
+
+This manual was written mostly with ChatGPT’s assistance, except for this section.
+
+Thank you, ChatGPT — and thank You, God.
+
 ---
 
 ## 📦 Installation
@@ -190,9 +216,4 @@ PBS = `" \t"`, PBS keywords = `{"\sp","\sw"}`
 * Define more pairs if you often align JSON, Lisp, or LaTeX code.
 * For debugging, we can add a `:AlignRFCDebug` helper to show how a line splits into PBS/NPBS.
 
----
-
-✅ That’s the **User Manual** version — practical, option-focused, with examples.
-
-Do you want me to also write a **cheat sheet** (like a one-page quick reference with the most useful command variants)?
 

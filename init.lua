@@ -5,7 +5,7 @@ local M = {}
 
 local defaults = {
   -- Characters considered PBS (Potential Blank Spaces).
-  -- Default: space + tab. Add more via :AlignRFC pbs=" \t{}"
+  -- Default: space + tab. Add more via :AlignKwds pbs=" \t{}"
   pbs_chars = " \t",
 
   -- NEW: sequences that behave like PBS (matched longest-first), e.g. {"\\sp","\\sw"}
@@ -519,7 +519,7 @@ end
 
 function M.setup(user_cfg)
   local base_cfg = vim.tbl_deep_extend("force", {}, defaults, user_cfg or {})
-  vim.api.nvim_create_user_command("AlignRFC", function(opts)
+  vim.api.nvim_create_user_command("AlignKwds", function(opts)
     local o = vim.tbl_deep_extend("force", {}, base_cfg)
 
     -- Robust arg parsing from raw string (supports quoted values & escapes)
