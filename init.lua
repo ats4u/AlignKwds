@@ -8,9 +8,21 @@ local defaults = {
   -- Default: space + tab. Add more via :AlignRFC pbs=" \t{}"
   pbs_chars = " \t",
 
+  -- NEW: sequences that behave like PBS (matched longest-first), e.g. {"\\sp","\\sw"}
+  pbs_keywords = {},
+
+  -- Recognize PBS keywords inside spans? (default false: spans stay indivisible NPBS)
+  pbs_keywords_in_spans = false,
+
   -- Spans (NPBS blocks): contents are NPBS as a unit, even if they contain PBS.
   -- Defaults protect quotes and parentheses (not braces).
-  protected_pairs = { {'"', '"'}, {'(', ')'} },
+  protected_pairs = {
+    { "'", "'" },
+    { '"', '"' },
+    { '(', ')' },
+    { '{', '}' },
+    { '[', ']' },
+  },
 
   -- Escape char inside spans (skips next codepoint literally)
   escape_char = "\\",
@@ -168,11 +180,32 @@ local function next_cp(line, idx)
   return cp, idx + #cp
 end
 
+-- Build keyword matcher (longest-first)
+local function make_keyword_matcher(list)
+  if not list or #list == 0 then
+    return function(_, _) return nil, nil end
+  end
+  -- copy & sort by length desc
+  local kws = {}
+  for _, s in ipairs(list) do
+    if s and s ~= "" then table.insert(kws, s) end
+  end
+  table.sort(kws, function(a,b) return #a > #b end)
+  return function(line, i)
+    for _, kw in ipairs(kws) do
+      if line:sub(i, i + #kw - 1) == kw then
+        return kw, i + #kw
+      end
+    end
+    return nil, nil
+  end
+end
+
 -- ===================== Span-aware PBS/NPBS splitting =====================
 
 -- Split into alternating PBS / NPBS fields, starting with PBS (possibly empty).
 -- Spans (from protected_pairs) are treated as indivisible NPBS blocks.
-local function split_pbs_npbs_spanaware(line, is_pbs, open_to_close, escape_char)
+local function split_pbs_npbs_spanaware(line, is_pbs, open_to_close, escape_char, kw_match, kw_in_spans)
   local fields, buf = {}, {}
   local n = #line
 
@@ -202,6 +235,16 @@ local function split_pbs_npbs_spanaware(line, is_pbs, open_to_close, escape_char
       if at_pbs then
         table.insert(fields, table.concat(buf)); buf = {}; at_pbs = false
       end
+      -- If we choose to honor keywords inside spans (usually false)
+      if kw_in_spans then
+        local kw, k = kw_match(line, i)
+        if kw then
+          -- still NPBS (since we're inside a span) -> just append keyword literally
+          table.insert(buf, kw)
+          i = k
+          goto continue
+        end
+      end
       -- 1) escape?
       if ch == escape_char then
         local ch2, k = next_cp(line, j)
@@ -225,7 +268,20 @@ local function split_pbs_npbs_spanaware(line, is_pbs, open_to_close, escape_char
       end
 
     else
-      -- Outside any span
+      -- Outside any span: keywords act like PBS (matched longest-first)
+      local kw, k = kw_match(line, i)
+      if kw then
+        if at_pbs then
+          table.insert(buf, kw)
+        else
+          table.insert(fields, table.concat(buf))
+          buf = { kw }
+          at_pbs = true
+        end
+        i = k
+        goto continue
+      end
+
       local closer = open_to_close[ch]
       if closer ~= nil then
         -- Start a new span (NPBS). Spans take precedence over PBS.
@@ -247,6 +303,7 @@ local function split_pbs_npbs_spanaware(line, is_pbs, open_to_close, escape_char
         end
       end
     end
+    ::continue::
   end
 
   table.insert(fields, table.concat(buf))
@@ -270,10 +327,29 @@ local function fields_to_columns(fields)
   return cols
 end
 
-local function is_pbs_only_line(line, is_pbs)
+-- PBS-only line detection now respects keywords (outside spans)
+local function is_pbs_only_line(line, is_pbs, kw_match, open_to_close)
   if line == "" then return true end
-  for ch in line:gmatch(UTF8_CHARPAT) do
-    if not is_pbs(ch) then return false end
+  local i, n = 1, #line
+  local stack = {}
+  while i <= n do
+    -- inside span => not PBS-only
+    if #stack > 0 then return false end
+    local kw, k = kw_match(line, i)
+    if kw then
+      i = k
+    else
+      local ch, j = next_cp(line, i)
+      if not ch then break end
+      local closer = open_to_close[ch]
+      if closer then
+        return false
+      end
+      if not is_pbs(ch) then
+        return false
+      end
+      i = j
+    end
   end
   return true
 end
@@ -330,6 +406,8 @@ function M.align(user_cfg, cmd_opts)
   local is_pbs = make_is_pbs(cfg.pbs_chars)
   local open_to_close = mk_pair_maps(cfg.protected_pairs)
   local esc = cfg.escape_char or "\\"
+  local kw_match = make_keyword_matcher(cfg.pbs_keywords or {})
+  local kw_in_spans = cfg.pbs_keywords_in_spans and true or false
 
   local srow, erow = get_target_range(cmd_opts, cfg)
   if not srow or not erow or srow > erow then return end
@@ -346,10 +424,10 @@ function M.align(user_cfg, cmd_opts)
   for i, line in ipairs(lines) do
     if line == "" then
       rows[i] = { untouched = true, columns = { [1] = { indent = "" } } }
-    elseif is_pbs_only_line(line, is_pbs) then
+    elseif is_pbs_only_line(line, is_pbs, kw_match, open_to_close) then
       rows[i] = { untouched = true, columns = { [1] = { indent = line } } }
     else
-      local fields = split_pbs_npbs_spanaware(line, is_pbs, open_to_close, esc)
+      local fields = split_pbs_npbs_spanaware(line, is_pbs, open_to_close, esc, kw_match, kw_in_spans)
       local cols = fields_to_columns(fields)
       rows[i] = { untouched = false, columns = cols }
       local count = #cols
@@ -430,22 +508,41 @@ end
 
 -- ===================== Command setup =====================
 
+local function split_keywords_list(s)
+  -- split on commas and/or whitespace; ignore empties
+  local out = {}
+  for token in s:gmatch("[^,%s]+") do
+    table.insert(out, token)
+  end
+  return out
+end
+
 function M.setup(user_cfg)
   local base_cfg = vim.tbl_deep_extend("force", {}, defaults, user_cfg or {})
   vim.api.nvim_create_user_command("AlignRFC", function(opts)
     local o = vim.tbl_deep_extend("force", {}, base_cfg)
 
     -- Robust arg parsing from raw string (supports quoted values & escapes)
-    local kv = parse_kv_args(opts.args)
+    local kv = (function(raw)
+      local t = parse_kv_args(raw)
+      -- unescape already applied inside parse_kv_args
+      return t
+    end)(opts.args)
 
     if kv.pbs ~= nil then
       o.pbs_chars = kv.pbs
+    end
+    if kv.pbskw ~= nil then
+      -- Example: pbskw="\\sp \\sw"  or pbskw="\\sp,\\sw"
+      o.pbs_keywords = split_keywords_list(kv.pbskw)
+    end
+    if kv.pbskw_in_spans ~= nil then
+      o.pbs_keywords_in_spans = (kv.pbskw_in_spans == "true" or kv.pbskw_in_spans == true)
     end
     if kv.pairs ~= nil then
       -- pairs example: pairs="() \"\" []"
       local P = {}
       local s = kv.pairs
-      -- simple two-char tokens scanning
       local i, n = 1, #s
       while i <= n do
         while i <= n and s:sub(i,i):match("%s") do i = i + 1 end
@@ -466,7 +563,7 @@ function M.setup(user_cfg)
     end
 
     M.align(o, opts)
-  end, { nargs = "*", range = true, desc = "Align per PBS/NPBS (v2.1, robust CLI)" })
+  end, { nargs = "*", range = true, desc = "Align per PBS/NPBS (v2.3, keywords as PBS)" })
 end
 
 return M
